@@ -1,8 +1,8 @@
 name: Build and Deploy Full Stack to ECS
 
+# 实验四为可选的云服务器部署模板：本实验不配置 ECS Secrets，故仅保留手动触发，
+# 需要时在 Actions 页面手动运行并提前配置 ECS_HOST / ECS_USER / ECS_SSH_PRIVATE_KEY / ECS_SSH_KNOWN_HOSTS。
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
