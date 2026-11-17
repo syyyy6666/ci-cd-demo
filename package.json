@@ -1,0 +1,11 @@
+{
+  "name": "ci-cd-demo",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Lab 11 CI/CD demo: React + Vite frontend and TypeScript Express backend",
+  "scripts": {
+    "lint": "npm --prefix apps/backend run lint && npm --prefix apps/frontend run lint",
+    "test": "npm --prefix apps/backend test && npm --prefix apps/frontend test",
+    "build": "npm --prefix apps/backend run build && npm --prefix apps/frontend run build"
+  }
+}

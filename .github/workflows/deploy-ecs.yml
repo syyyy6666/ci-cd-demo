@@ -1,0 +1,90 @@
+name: Build and Deploy Full Stack to ECS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ecs-production
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ECS_HOST: ${{ secrets.ECS_HOST }}
+      ECS_USER: ${{ secrets.ECS_USER }}
+      ECS_SSH_PRIVATE_KEY: ${{ secrets.ECS_SSH_PRIVATE_KEY }}
+      ECS_SSH_KNOWN_HOSTS: ${{ secrets.ECS_SSH_KNOWN_HOSTS }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build and test frontend
+        working-directory: apps/frontend
+        run: |
+          npm ci
+          npm test --if-present
+          npm run build
+
+      - name: Build and test backend
+        working-directory: apps/backend
+        run: |
+          npm ci
+          npm test --if-present
+          npm run build
+          test -f dist/server.js
+
+      - name: Configure trusted SSH connection
+        run: |
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$ECS_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$ECS_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Upload frontend and backend artifacts
+        run: |
+          DEST="/srv/cicd-demo/releases/${GITHUB_SHA}"
+          ssh -o BatchMode=yes "$ECS_USER@$ECS_HOST" "mkdir -p '$DEST/frontend' '$DEST/backend/dist'"
+          rsync -az --delete apps/frontend/dist/ "$ECS_USER@$ECS_HOST:$DEST/frontend/"
+          rsync -az --delete apps/backend/dist/ "$ECS_USER@$ECS_HOST:$DEST/backend/dist/"
+          rsync -az apps/backend/package.json apps/backend/package-lock.json \
+            "$ECS_USER@$ECS_HOST:$DEST/backend/"
+
+      - name: Activate release, check health, rollback if needed
+        run: |
+          ssh -o BatchMode=yes "$ECS_USER@$ECS_HOST" "DEPLOY_SHA=$GITHUB_SHA bash -se" <<'REMOTE'
+          set -euo pipefail
+          release="/srv/cicd-demo/releases/${DEPLOY_SHA}"
+          previous="$(readlink -f /srv/cicd-demo/current || true)"
+
+          cd "$release/backend"
+          npm ci --omit=dev
+          ln -sfn "$release" /srv/cicd-demo/current.next
+          mv -Tf /srv/cicd-demo/current.next /srv/cicd-demo/current
+
+          if ! sudo -n /usr/bin/systemctl restart cicd-demo || \
+             ! curl -fsS --retry 5 --retry-connrefused --retry-delay 2 \
+               http://127.0.0.1:3000/health; then
+            echo 'Deployment failed; restoring previous release' >&2
+            if [ -n "$previous" ] && [ -d "$previous" ]; then
+              ln -sfn "$previous" /srv/cicd-demo/current.next
+              mv -Tf /srv/cicd-demo/current.next /srv/cicd-demo/current
+              sudo -n /usr/bin/systemctl restart cicd-demo
+            fi
+            exit 1
+          fi
+          echo "Deployed commit ${DEPLOY_SHA} successfully"
+          REMOTE
